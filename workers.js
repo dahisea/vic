@@ -2,7 +2,7 @@ import { connect } from 'cloudflare:sockets';
 
 let userID = '868063d2-aae2-4e52-b87f-8d60c1fa2794';
 
-let dependenceIP = '';
+let dependenceIP = '104.18.10.244';
 
 if (!isValidUUID(userID)) {
 	throw new Error('uuid fail');
