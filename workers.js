@@ -1,5 +1,8 @@
 import { connect } from 'cloudflare:sockets';
+
 let userID = '868063d2-aae2-4e52-b87f-8d60c1fa2794';
+
+let dependenceIP = '';
 
 if (!isValidUUID(userID)) {
 	throw new Error('uuid fail');
@@ -8,13 +11,14 @@ if (!isValidUUID(userID)) {
 export default {
 	/**
 	 * @param {import("@cloudflare/workers-types").Request} request
-	 * @param {{UUID: string}} env
+	 * @param {{UUID: string, DEPENDENCEIP: string}} env
 	 * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
 	 * @returns {Promise<Response>}
 	 */
 	async fetch(request, env, ctx) {
 		try {
 			userID = env.UUID || userID;
+			dependenceIP = env.DEPENDENCEIP || dependenceIP;
 			const upgradeHeader = request.headers.get('Upgrade');
 			if (!upgradeHeader || upgradeHeader !== 'websocket') {
 				const url = new URL(request.url);
@@ -42,6 +46,8 @@ export default {
 		}
 	},
 };
+
+
 
 
 /**
@@ -104,14 +110,22 @@ async function funwayOverWSHandler(request) {
 				// webSocket.close(1000, message);
 				return;
 			}
-			
+			// if UDP but port not DNS port, close it
+			if (isUDP) {
+				if (portRemote === 53) {
+					isDns = true;
+				} else {
+					// controller.error('UDP proxy only enable for DNS which is port 53');
+					throw new Error('UDP proxy only enable for DNS which is port 53'); // cf seems has bug, controller.error will not end stream
+					return;
+				}
 			}
 			// ["version", "附加信息长度 N"]
 			const funwayResponseHeader = new Uint8Array([funwayVersion[0], 0]);
 			const rawClientData = chunk.slice(rawDataIndex);
 
 			// TODO: support udp here when cf runtime has udp support
-			if (isUDP) {
+			if (isDns) {
 				const { write } = await handleUDPOutBound(webSocket, funwayResponseHeader, log);
 				udpStreamWrite = write;
 				udpStreamWrite(rawClientData);
@@ -131,6 +145,7 @@ async function funwayOverWSHandler(request) {
 
 	return new Response(null, {
 		status: 101,
+		// @ts-ignore
 		webSocket: client,
 	});
 }
@@ -162,6 +177,17 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
 		return tcpSocket;
 	}
 
+	// if the cf connect tcp socket have no incoming data, we retry to redirect ip
+	async function retry() {
+		const tcpSocket = await connectAndWrite(dependenceIP || addressRemote, portRemote)
+		// no matter retry success or not, close websocket
+		tcpSocket.closed.catch(error => {
+			console.log('retry tcpSocket closed error', error);
+		}).finally(() => {
+			safeCloseWebSocket(webSocket);
+		})
+		remoteSocketToWS(tcpSocket, webSocket, funwayResponseHeader, null, log);
+	}
 
 	const tcpSocket = await connectAndWrite(addressRemote, portRemote);
 
@@ -572,7 +598,7 @@ function getFUNWAYConfig(userID, hostName) {
 - type: funway
   name: ${hostName}
   server: ${hostName}
-  port: 8443
+  port: 443
   uuid: ${userID}
   network: ws
   tls: true
@@ -587,3 +613,4 @@ function getFUNWAYConfig(userID, hostName) {
 ################################################################
 `;
 }
+
